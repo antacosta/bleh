@@ -1,0 +1,29 @@
+[project]
+name = "songanalysis"
+version = "0.1.0"
+description = "Deterministic, cacheable song-analysis layer for an AI DJ system"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "librosa>=0.10.2",
+    "mutagen>=1.47",
+    "numpy>=1.26",
+    "pyloudnorm>=0.1.1",
+    "scipy>=1.11",
+    "soundfile>=0.12",
+]
+
+[project.scripts]
+songanalysis = "songanalysis.cli:main"
+
+[build-system]
+requires = ["uv_build>=0.8.17,<0.9.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
