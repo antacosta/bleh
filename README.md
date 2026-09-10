@@ -72,3 +72,61 @@ Explicitly out of scope for this layer (belongs to a later planning/mixing
 layer): song recommendation, candidate scoring, playlist generation,
 transition/crossfade selection, beatmatching, audio rendering, and any
 LLM/cloud service.
+
+---
+
+# songscoring
+
+A separate, independent layer (`src/songscoring/`) that consumes
+`songanalysis` JSON and answers one question: *given the song currently
+playing, how good would each other song in the library be as the next one?*
+It does not reanalyze audio, does not pick or perform a transition, and does
+not do multi-song look-ahead planning -- see `songscoring/scorer.py`'s
+module docstring and the architecture diagram below.
+
+## Usage
+
+```python
+from songscoring.song_profile import profile_from_json_file
+from songscoring.state import DJState
+from songscoring.scorer import rank_candidates
+
+current = profile_from_json_file("now_playing.json")
+library = [profile_from_json_file(p) for p in other_analysis_files]
+
+state = DJState(current_song=current, current_position=180.0)
+ranking = rank_candidates(state, library)
+
+for r in ranking[:10]:
+    print(r.candidate_id, r.total_score, r.to_dict())
+```
+
+## Architecture
+
+```
+audio -> songanalysis -> SongProfile (songscoring/song_profile.py)
+                              |
+   DJState (songscoring/state.py) ---> score_candidate() per component:
+                              |          tempo, harmonic, energy, rhythm,
+                              |          structure, style, familiarity,
+                              |          repetition  (songscoring/components/)
+                              v
+                    confidence-weighted total_score
+                    (songscoring/scorer.py, weights in config.py)
+                              |
+                              v
+                      rank_candidates() -> CandidateScore list
+```
+
+Every scoring component is a pure function of `(current_song, candidate,
+state, config) -> ComponentScore`, independently unit-tested. All weights
+live in `songscoring/config.py`, never hard-coded in a component.
+
+## Confidence-aware scoring
+
+Every component reports a `value` (0..100, its best-guess assessment) and a
+separate `confidence` (0..1, how much to trust that assessment) -- these are
+never collapsed into one number. The central combiner
+(`scorer.compute_total_score`) scales each component's *weight* by its own
+confidence before averaging, so a component that's unsure barely moves the
+total, while its `value` stays visible for inspection.
