@@ -27,17 +27,14 @@ _MIN_BEATS_FOR_DOWNBEAT = 8
 _CANDIDATE_BEATS_PER_BAR = (3, 4)
 
 #: librosa's tempo estimator defaults to a very narrow prior (std_bpm=1.0,
-#: i.e. one octave of std-dev in log2-BPM space, combined with a heavily
+#: one octave of std-dev in log2-BPM space) combined with a heavily
 #: log-compressed tempogram weighting that lets the prior dominate whenever
-#: the autocorrelation peak isn't overwhelmingly strong). In practice this
-#: pulls a large fraction of real-world tracks' tempo estimates toward
-#: ~120 BPM regardless of their true tempo, and causes spurious "tempo
-#: change" events where the local tempo curve flips between the prior's
-#: pull and the song's real periodicity. Widening it lets the actual
-#: autocorrelation peak decide within the whole practical music-tempo
-#: range, while still mildly discouraging implausible extremes.
-#: See: https://librosa.org/doc -- librosa.feature.rhythm.tempo's own
-#: docstring example demonstrates this exact jumpiness under the default.
+#: the autocorrelation peak isn't overwhelmingly strong -- librosa's own
+#: docstring example demonstrates the resulting per-frame jumpiness under
+#: the default. That jumpiness is exactly what feeds spurious "tempo
+#: change" events (the local, per-frame tempo curve below), so this wider
+#: prior is applied there. It deliberately is *not* applied to the global
+#: tempo/beat-grid estimate -- see the comment in analyze_tempo_beat for why.
 TEMPO_PRIOR_STD_BPM = 3.0
 
 
@@ -279,15 +276,19 @@ def analyze_tempo_beat(y: np.ndarray, sr: int) -> TempoBeatFeatures:
     if not np.any(onset_env > 1e-9):
         return _empty_result()
 
-    tempo_raw = librosa_rhythm.tempo(
-        onset_envelope=onset_env, sr=sr, hop_length=HOP_LENGTH, aggregate=np.median, std_bpm=TEMPO_PRIOR_STD_BPM
+    # The global tempo/beat grid intentionally keeps librosa's own default
+    # prior here: an A/B comparison across the real-song validation corpus
+    # showed widening it changed the *global* estimate for only a handful of
+    # tracks, and where it did, about half those changes looked like a
+    # plausible octave-ambiguity coin flip rather than a clear improvement
+    # (e.g. one track's estimate moved from a plausible 117.5 BPM to an
+    # implausible-for-its-genre 234.9 BPM). Tempo-octave ambiguity is a
+    # well-known, generally unresolved problem in MIR; swapping one
+    # uncertain answer for a different uncertain answer isn't a fix.
+    tempo_raw, beat_frames = librosa.beat.beat_track(
+        onset_envelope=onset_env, sr=sr, hop_length=HOP_LENGTH, units="frames"
     )
     bpm = float(np.atleast_1d(tempo_raw)[0])
-    # Feed our own (wide-prior) tempo estimate in directly rather than letting
-    # beat_track re-derive tempo internally under its own narrow default prior.
-    _, beat_frames = librosa.beat.beat_track(
-        onset_envelope=onset_env, sr=sr, hop_length=HOP_LENGTH, bpm=bpm, units="frames"
-    )
     beat_times = librosa.frames_to_time(beat_frames, sr=sr, hop_length=HOP_LENGTH)
     beat_intervals = np.diff(beat_times)
 

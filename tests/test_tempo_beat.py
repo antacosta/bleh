@@ -65,18 +65,29 @@ def test_very_short_audio_does_not_crash():
     assert result.bpm_confidence == 0.0 or result.beat_times.size >= 0
 
 
-def test_bpm_detection_accurate_away_from_120_prior_center():
-    """Regression test: real-song validation found many tracks' BPM pulled
-    toward ~120 (librosa's default tempo prior is centered there with a very
-    narrow std_bpm=1.0), including exact repeats of exotic-looking values
-    like 129.19921875 and 117.453835 across unrelated songs. A clean click
-    track far from 120 BPM should still be detected close to its true tempo
-    after widening the prior (see TEMPO_PRIOR_STD_BPM)."""
+def test_bpm_detection_accurate_away_from_120_default_prior_center():
+    """A clean click track far from 120 BPM (librosa's default tempo prior
+    is centered there) should still be detected close to its true tempo."""
     for true_bpm in (70.0, 190.0):
         y = click_track(20.0, true_bpm)
         result = analyze_tempo_beat(y, SR)
         assert result.bpm is not None
         assert any(abs(result.bpm - true_bpm * mult) < 6.0 for mult in (0.5, 1.0, 2.0))
+
+
+def test_steady_tempo_track_has_no_spurious_tempo_change_events():
+    """Regression test: real-song validation found librosa's per-frame local
+    tempo curve (aggregate=None) jumping between metrically-related values
+    even for a single, steady tempo -- librosa's own docstring example
+    demonstrates this under the default std_bpm=1.0 prior -- which produced
+    spurious high-confidence tempo_change events, including two exact/near
+    ratio jumps (80.7->161.5, exactly 2x; 117.45->184.57, ~1.5x) on real
+    songs with no audible tempo change. A steady click track should not
+    produce any tempo_change_events after widening the local-curve prior
+    (TEMPO_PRIOR_STD_BPM) and adding the octave-error penalty."""
+    y = click_track(45.0, 128.0)
+    result = analyze_tempo_beat(y, SR)
+    assert result.tempo_change_events == []
 
 
 def test_octave_error_penalty_discounts_metrical_level_jumps():
