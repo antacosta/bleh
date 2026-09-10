@@ -32,6 +32,32 @@ class EnergyDirection(Enum):
     RESET = "reset"
 
 
+class EnergyIntentStrength(Enum):
+    """How firmly ``desired_energy_direction`` should be honored.
+
+    A direction can be stated three distinguishable ways:
+
+    - ``NONE``: no direction at all (``desired_energy_direction is None``;
+      this value is the field's meaning by convention, not something you'd
+      set alongside a direction).
+    - ``MILD``: a soft nudge -- "lean toward a build if a good option
+      exists", without letting it override an otherwise clearly better
+      candidate on every other dimension.
+    - ``EXPLICIT``: a firm request -- "build the energy now". This should
+      give the energy component substantially more influence than its base
+      weight, per the validation finding that a stated direction was being
+      outvoted by unrelated components.
+
+    See ``songscoring.config.EnergyIntentConfig`` for how this is turned
+    into an actual number, and ``scorer.compute_total_score`` for the
+    (generic, not energy-specific) mechanism that applies it.
+    """
+
+    NONE = "none"
+    MILD = "mild"
+    EXPLICIT = "explicit"
+
+
 @dataclass(frozen=True)
 class DJState:
     """Snapshot of the set right before choosing the next song.
@@ -52,6 +78,12 @@ class DJState:
             a simple running trajectory, not a plan.
         desired_energy_direction: explicit intent for where energy should
             head next, if any. Left ``None`` by default (see EnergyDirection).
+        energy_intent_strength: how firmly ``desired_energy_direction`` should
+            be honored (see EnergyIntentStrength). Only meaningful when
+            ``desired_energy_direction`` is not ``None``; defaults to
+            ``EXPLICIT`` so that simply setting a direction -- without any
+            further qualification -- reads as "I want this now", matching
+            historical behavior for callers that only ever set a direction.
         familiarity_by_song_id: optional external lookup of a 0..1
             familiarity score per song id, meant to eventually be backed by
             real listening history. Never fabricated here -- absent ids (or
@@ -65,6 +97,7 @@ class DJState:
     recent_genres: tuple[str | None, ...] = field(default_factory=tuple)
     set_energy: tuple[float, ...] = field(default_factory=tuple)
     desired_energy_direction: EnergyDirection | None = None
+    energy_intent_strength: EnergyIntentStrength = EnergyIntentStrength.EXPLICIT
 
     # Forward-looking hooks -- deliberately inert until real data exists.
     familiarity_by_song_id: dict[str, float] | None = None

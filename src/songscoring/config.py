@@ -148,6 +148,46 @@ class StyleConfig:
 
 
 @dataclass(frozen=True)
+class EnergyIntentConfig:
+    """How much more influence the energy component gets when the DJ/user
+    has stated an explicit energy-direction intent, versus no opinion at all.
+
+    Implemented as a multiplier on the energy component's *weight* (not its
+    value), applied through the same ``effective_weight = base_weight *
+    confidence * intent_multiplier`` pattern already used for confidence in
+    ``scorer.compute_total_score`` -- so an explicit request doesn't need a
+    second, special-cased scoring formula, and ``overall_confidence`` stays
+    unaffected (it is computed from base weights only, never from how much
+    priority we chose to give a dimension).
+
+    Multipliers this large are why a hard requirement on the *value* side --
+    ``EnergyConfig`` -- still matters: boosting weight only helps if the
+    underlying energy score itself is a sound measure of "does this candidate
+    honor the requested direction". ``trend_alignment_weight`` below adds one
+    more such value-side signal: whether the candidate keeps moving the right
+    way internally, not just where it starts.
+    """
+
+    #: Multiplier applied when desired_energy_direction is None (the
+    #: strength value is moot in that case, but kept at neutral for clarity
+    #: and so the dict lookup below always has an entry).
+    none_multiplier: float = 1.0
+    #: A soft nudge -- lean toward the request when a good option exists,
+    #: without letting it override an otherwise clearly better candidate.
+    mild_multiplier: float = 2.0
+    #: A firm request -- give energy substantially more say than any other
+    #: single component, without making it the *only* thing that matters
+    #: (confidence weighting and the floor in compute_total_score still
+    #: apply, so a low-confidence energy read is still tempered).
+    explicit_multiplier: float = 5.0
+    #: Additional bonus/penalty (added to the energy component's 0..100
+    #: value, not multiplied) for the candidate's own energy_trend agreeing
+    #: with the requested direction -- "does it keep moving the right way
+    #: once it's playing", scaled by how strongly the direction was stated.
+    trend_alignment_bonus: float = 10.0
+
+
+@dataclass(frozen=True)
 class RepetitionConfig:
     #: Penalty (0..100 points) for a candidate that exactly matches a song
     #: in recent_songs, decaying with how long ago it played.
@@ -171,6 +211,7 @@ class ScoringConfig:
     rhythm: RhythmConfig = field(default_factory=RhythmConfig)
     structure: StructureConfig = field(default_factory=StructureConfig)
     style: StyleConfig = field(default_factory=StyleConfig)
+    energy_intent: EnergyIntentConfig = field(default_factory=EnergyIntentConfig)
     repetition: RepetitionConfig = field(default_factory=RepetitionConfig)
     #: Floor applied to (base_weight * confidence) during renormalization so
     #: a component at zero confidence still contributes an infinitesimal,

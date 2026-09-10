@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from songscoring.config import DEFAULT_CONFIG
-from songscoring.scorer import rank_candidates, score_candidate
+from songscoring.scorer import compute_total_score, rank_candidates, score_candidate
 from songscoring.state import DJState
+from songscoring.types import ComponentScore
 from scoring_helpers import make_profile
 
 
@@ -101,3 +102,44 @@ def test_to_dict_is_json_serializable():
 
 def test_default_config_weights_sum_to_one():
     assert abs(sum(DEFAULT_CONFIG.weights.as_dict().values()) - 1.0) < 1e-9
+
+
+def test_weight_multipliers_shift_the_total_toward_the_boosted_component():
+    components = {
+        "a": ComponentScore(value=100.0, confidence=1.0),
+        "b": ComponentScore(value=0.0, confidence=1.0),
+    }
+    weights = {"a": 0.5, "b": 0.5}
+
+    unboosted, _ = compute_total_score(components, weights, min_effective_weight=1e-6)
+    boosted, _ = compute_total_score(components, weights, min_effective_weight=1e-6, weight_multipliers={"a": 5.0})
+    assert unboosted == 50.0
+    assert boosted > unboosted
+
+
+def test_weight_multipliers_do_not_affect_overall_confidence():
+    components = {
+        "a": ComponentScore(value=100.0, confidence=0.4),
+        "b": ComponentScore(value=0.0, confidence=0.9),
+    }
+    weights = {"a": 0.5, "b": 0.5}
+
+    _, unboosted_confidence = compute_total_score(components, weights, min_effective_weight=1e-6)
+    _, boosted_confidence = compute_total_score(
+        components, weights, min_effective_weight=1e-6, weight_multipliers={"a": 5.0}
+    )
+    assert boosted_confidence == unboosted_confidence
+
+
+def test_missing_weight_multiplier_entries_default_to_neutral():
+    components = {
+        "a": ComponentScore(value=80.0, confidence=1.0),
+        "b": ComponentScore(value=20.0, confidence=1.0),
+    }
+    weights = {"a": 0.5, "b": 0.5}
+
+    baseline, _ = compute_total_score(components, weights, min_effective_weight=1e-6)
+    with_partial_multipliers, _ = compute_total_score(
+        components, weights, min_effective_weight=1e-6, weight_multipliers={"a": 1.0}
+    )
+    assert baseline == with_partial_multipliers

@@ -25,9 +25,9 @@ from __future__ import annotations
 
 import math
 
-from songscoring.config import EnergyConfig
+from songscoring.config import EnergyConfig, EnergyIntentConfig
 from songscoring.song_profile import SongProfile
-from songscoring.state import DJState, EnergyDirection
+from songscoring.state import DJState, EnergyDirection, EnergyIntentStrength
 from songscoring.types import ComponentScore
 
 _DIRECTION_IDEAL_DELTA = {
@@ -35,6 +35,55 @@ _DIRECTION_IDEAL_DELTA = {
     EnergyDirection.DECREASE: -0.45,
     EnergyDirection.MAINTAIN: 0.0,
 }
+
+#: Sign of a "good" energy_trend (composite-energy units/sec, see
+#: SongProfile.energy_trend) for each direction that isn't MAINTAIN, which
+#: instead rewards a trend close to zero. RESET shares INCREASE's opposite --
+#: bringing the room down should keep coming down, not immediately climb.
+_DIRECTION_TREND_SIGN = {
+    EnergyDirection.INCREASE: 1.0,
+    EnergyDirection.DECREASE: -1.0,
+    EnergyDirection.RESET: -1.0,
+}
+
+#: How much of the trend-alignment bonus applies at each intent strength --
+#: a mild preference should nudge, not fully commit, while no explicit
+#: direction means the bonus never applies at all (see score_energy).
+_STRENGTH_SCALE = {
+    EnergyIntentStrength.NONE: 0.0,
+    EnergyIntentStrength.MILD: 0.4,
+    EnergyIntentStrength.EXPLICIT: 1.0,
+}
+
+#: Trend magnitude (composite-energy units/sec) treated as "clearly moving"
+#: for the purpose of the tanh soft-sign below. Real trends in the validated
+#: corpus range roughly 0.00005..0.001, so this sits in the middle of that.
+_TREND_SATURATION = 0.0005
+
+
+def _trend_alignment_bonus(
+    trend: float, desired: EnergyDirection | None, strength: EnergyIntentStrength, config: EnergyIntentConfig
+) -> float:
+    """Extra credit (or penalty) for the candidate's own internal energy
+    trajectory agreeing with the requested direction -- distinct from
+    ``delta`` above, which only looks at *where it starts*. Under BUILD, a
+    candidate that keeps climbing once it's playing is a better choice than
+    one that opens at the same level but immediately fades, even though
+    both have an identical opening delta.
+    """
+    if desired is None:
+        return 0.0
+    strength_scale = _STRENGTH_SCALE.get(strength, 1.0)
+    if strength_scale == 0.0:
+        return 0.0
+
+    normalized = math.tanh(trend / _TREND_SATURATION)  # soft sign, -1..1
+    if desired == EnergyDirection.MAINTAIN:
+        alignment = 1.0 - abs(normalized)
+    else:
+        alignment = normalized * _DIRECTION_TREND_SIGN[desired]
+
+    return config.trend_alignment_bonus * strength_scale * alignment
 
 
 def _classify(delta: float, candidate_start: float, config: EnergyConfig) -> str:
@@ -58,7 +107,11 @@ def _neutral_shape_score(delta: float) -> float:
 
 
 def score_energy(
-    current: SongProfile | None, candidate: SongProfile, state: DJState, config: EnergyConfig
+    current: SongProfile | None,
+    candidate: SongProfile,
+    state: DJState,
+    config: EnergyConfig,
+    intent_config: EnergyIntentConfig,
 ) -> ComponentScore:
     if current is None:
         candidate_start = candidate.starting_energy(config.window_sec)
@@ -89,6 +142,11 @@ def score_energy(
         ideal = _DIRECTION_IDEAL_DELTA[desired]
         value = 100.0 * math.exp(-(((delta - ideal) / 0.35) ** 2))
 
+    trend_bonus = 0.0
+    if desired is not None:
+        trend_bonus = _trend_alignment_bonus(candidate.energy_trend, desired, state.energy_intent_strength, intent_config)
+        value += trend_bonus
+
     value = max(0.0, min(100.0, value))
 
     # Energy is a direct measurement, not an inferred category -- confidence
@@ -104,6 +162,8 @@ def score_energy(
             "delta": round(delta, 3),
             "transition_shape": shape,
             "desired_direction": desired.value if desired else None,
+            "energy_intent_strength": state.energy_intent_strength.value,
             "candidate_energy_trend": round(candidate.energy_trend, 5),
+            "trend_alignment_bonus": round(trend_bonus, 3),
         },
     )

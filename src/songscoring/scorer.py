@@ -16,14 +16,41 @@ from songscoring.components.rhythm import score_rhythm
 from songscoring.components.structure import score_structure
 from songscoring.components.style import score_style
 from songscoring.components.tempo import score_tempo
-from songscoring.config import DEFAULT_CONFIG, ScoringConfig
+from songscoring.config import DEFAULT_CONFIG, EnergyIntentConfig, ScoringConfig
 from songscoring.song_profile import SongProfile
-from songscoring.state import DJState
+from songscoring.state import DJState, EnergyIntentStrength
 from songscoring.types import CandidateScore, ComponentScore
+
+_ENERGY_INTENT_MULTIPLIER = {
+    EnergyIntentStrength.NONE: lambda cfg: cfg.none_multiplier,
+    EnergyIntentStrength.MILD: lambda cfg: cfg.mild_multiplier,
+    EnergyIntentStrength.EXPLICIT: lambda cfg: cfg.explicit_multiplier,
+}
+
+
+def energy_intent_multiplier(state: DJState, config: EnergyIntentConfig) -> float:
+    """How much more (or, in principle, less) a component's weight should
+    count given the DJ/user's stated energy-direction intent -- see
+    EnergyIntentConfig and EnergyIntentStrength. No explicit direction at
+    all means there is nothing to honor, regardless of what
+    ``energy_intent_strength`` happens to hold, so that case is checked
+    first and short-circuits to neutral.
+
+    Public (not just used by ``score_candidate`` below): the look-ahead
+    planner reuses this exact function to scale how much its sequence-level
+    energy-trajectory term should matter, so "how strongly was a direction
+    requested" is answered in exactly one place for both layers.
+    """
+    if state.desired_energy_direction is None:
+        return config.none_multiplier
+    return _ENERGY_INTENT_MULTIPLIER[state.energy_intent_strength](config)
 
 
 def compute_total_score(
-    components: dict[str, ComponentScore], weights: dict[str, float], min_effective_weight: float
+    components: dict[str, ComponentScore],
+    weights: dict[str, float],
+    min_effective_weight: float,
+    weight_multipliers: dict[str, float] | None = None,
 ) -> tuple[float, float]:
     """Confidence-weighted combination of component scores into one total.
 
@@ -39,12 +66,26 @@ def compute_total_score(
     the same reason the brief asked for it: it's easy to reason about and
     to retune once real feedback exists.
 
+    ``weight_multipliers`` is the same mechanism extended to *intent*
+    rather than confidence: an optional per-component multiplier (e.g. "the
+    DJ explicitly asked for an energy direction, so weight energy 5x")
+    folded into the same ``effective_weight`` product before renormalizing.
+    It is deliberately generic -- this function doesn't know or care that
+    the only caller today only ever multiplies "energy" -- so no component
+    is special-cased here, only in whatever computes the multiplier dict
+    (see ``score_candidate``). Missing entries default to 1.0 (no change).
+
     Returns ``(total_score, overall_confidence)``. ``overall_confidence``
-    is computed from *base* weights (not confidence-scaled), so it honestly
-    reports how much of the judgement rests on solid ground rather than
-    being self-reinforcing.
+    is computed from *base* weights only -- never confidence-scaled or
+    multiplier-scaled -- so it honestly reports how much of the judgement
+    rests on solid ground, rather than being inflated just because we chose
+    to prioritize a dimension more heavily.
     """
-    effective_weights = {name: max(weights[name] * c.confidence, min_effective_weight) for name, c in components.items()}
+    multipliers = weight_multipliers or {}
+    effective_weights = {
+        name: max(weights[name] * c.confidence * multipliers.get(name, 1.0), min_effective_weight)
+        for name, c in components.items()
+    }
     total_effective = sum(effective_weights.values())
     total_score = sum(effective_weights[name] * c.value for name, c in components.items()) / total_effective
 
@@ -64,7 +105,7 @@ def score_candidate(state: DJState, candidate: SongProfile, config: ScoringConfi
 
     tempo = score_tempo(current, candidate, config.tempo)
     harmonic = score_harmonic(current, candidate, config.harmonic)
-    energy = score_energy(current, candidate, state, config.energy)
+    energy = score_energy(current, candidate, state, config.energy, config.energy_intent)
     rhythm = score_rhythm(current, candidate, config.rhythm)
     structure = score_structure(current, candidate, state, config.structure)
     style = score_style(current, candidate, config.style)
@@ -81,7 +122,10 @@ def score_candidate(state: DJState, candidate: SongProfile, config: ScoringConfi
         "familiarity": familiarity,
         "repetition": repetition,
     }
-    total_score, overall_confidence = compute_total_score(components, config.weights.as_dict(), config.min_effective_weight)
+    weight_multipliers = {"energy": energy_intent_multiplier(state, config.energy_intent)}
+    total_score, overall_confidence = compute_total_score(
+        components, config.weights.as_dict(), config.min_effective_weight, weight_multipliers
+    )
 
     return CandidateScore(
         candidate_id=candidate.id,

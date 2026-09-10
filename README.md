@@ -130,3 +130,120 @@ never collapsed into one number. The central combiner
 (`scorer.compute_total_score`) scales each component's *weight* by its own
 confidence before averaging, so a component that's unsure barely moves the
 total, while its `value` stays visible for inspection.
+
+## Explicit energy intent
+
+`DJState.desired_energy_direction` can be stated at three distinguishable
+strengths (`EnergyIntentStrength`: `NONE` / `MILD` / `EXPLICIT`, see
+`state.py`). An `EXPLICIT` request (the default once a direction is set)
+gives the energy component substantially more influence than its base
+weight -- via the *same* confidence-scaling mechanism `compute_total_score`
+already uses, generalized with an optional `weight_multipliers` argument,
+not a second, special-cased formula (see `config.EnergyIntentConfig` and
+`scorer.energy_intent_multiplier`). With no explicit direction, scoring is
+unchanged from the original balanced behavior.
+
+---
+
+# songplanner
+
+A third, independent layer (`src/songplanner/`) that plans a short
+*sequence* of upcoming songs (~3-5), not just the single best next one, via
+bounded beam search. It consumes `songscoring` to prune candidates and
+score transitions -- it does not reanalyze audio, duplicate scoring logic,
+or choose/render an actual transition (crossfade, beatmatching, stems);
+that is a later layer's job. See `songplanner/planner.py`'s module
+docstring.
+
+## Usage
+
+```python
+from songscoring.song_profile import profile_from_json_file
+from songscoring.state import DJState, EnergyDirection
+from songplanner.planner import plan_sequence
+
+current = profile_from_json_file("now_playing.json")
+library = [profile_from_json_file(p) for p in other_analysis_files]
+
+state = DJState(current_song=current, desired_energy_direction=EnergyDirection.INCREASE)
+plan = plan_sequence(state, library)
+
+for step in plan.steps:
+    print(step.position, step.song_id, step.transition_score.total_score)
+print(plan.sequence_score.to_dict())    # full structured breakdown + reasons
+print(plan.local_vs_global)             # why the chosen opening beat the alternatives
+```
+
+## Architecture
+
+```
+audio -> songanalysis -> SongProfile -> songscoring (one-step scorer)
+                                              |
+                              PlannerState (planner_state.py): a
+                              hypothetical, immutable DJState + the
+                              sequence chosen so far -- advance() returns
+                              a new state, never mutates the real one
+                                              |
+                              candidate_pool.build_pool(): rank_candidates()
+                              prunes the library to a bounded pool at each
+                              node (not an exhaustive per-depth scan)
+                                              |
+                              beam search (planner.py): generate -> score
+                              whole paths -> keep best beam_width -> expand
+                              -> repeat for horizon steps
+                                              |
+                              sequence_scoring.score_sequence(): combines
+                              mean transition score with energy-trajectory,
+                              variety, and coherence -- via the *same*
+                              compute_total_score combiner songscoring uses
+                                              v
+                                      Plan (types.py): steps + full
+                                      structured score breakdown +
+                                      local-vs-global comparison
+```
+
+`[future layers, not built here]`: Transition Selection (how to actually
+mix from one planned song into the next) -> Audio Rendering.
+
+## Why look-ahead, not just repeated one-step scoring
+
+A purely greedy one-step scorer can only ask "how good is B after A". The
+planner additionally asks "how good is B after A, given where B lets us go
+next" -- so it can prefer A -> B -> C over A -> D -> E even when A -> D
+scores higher alone, if B opens onto a much better C. This requires
+comparing whole hypothetical paths, which is exactly what beam search
+(not a single ranking pass) provides: multiple candidate paths survive
+each step, and the *final* choice is decided by total sequence score, not
+by which move looked best immediately.
+
+## Sequence-level scoring, beyond a sum of transition scores
+
+`sequence_scoring.score_sequence` combines four components -- via the
+identical confidence-weighted combiner `songscoring.scorer.
+compute_total_score` uses for one-step scoring, not a second formula:
+
+- `transition`: mean of the path's own one-step scores (already computed;
+  reused, not redone).
+- `trajectory`: does the path's energy shape match the requested direction
+  (BUILD/RELEASE/MAINTAIN), or read as a coherent shape with no direction
+  at all -- rewarding an overall trend, not strict monotonicity, and
+  penalizing RELEASE's "instant collapse" as a distinct failure mode.
+- `variety`: flat, non-decaying penalty for a song/artist/genre recurring
+  within the plan (the one-step repetition component's recency-decay isn't
+  strict enough for one short plan; see config.py).
+- `coherence`: penalizes erratic genre "bouncing" (A -> B -> A) while
+  allowing progression (A -> B -> C) or a sustained run (A -> A -> B).
+
+`trajectory`'s *weight* is scaled by the same `EnergyIntentConfig`
+multiplier the one-step energy-intent fix uses, and its *confidence* tracks
+the per-step energy component's confidence specifically -- so an uncertain
+energy read dampens the trajectory claim without needing a second
+uncertainty model.
+
+## Explainability
+
+`Plan.to_dict()` / `SequenceScoreBreakdown.to_dict()` expose per-transition
+scores, sequence-level component values, the energy-level trajectory, and a
+`reasons` list -- all built by formatting numbers already computed
+elsewhere in this package. Nothing in `songplanner` (or any layer here)
+generates natural-language explanations via an LLM.
