@@ -26,6 +26,20 @@ _MIN_DURATION_FOR_RHYTHM_SEC = 2.0
 _MIN_BEATS_FOR_DOWNBEAT = 8
 _CANDIDATE_BEATS_PER_BAR = (3, 4)
 
+#: librosa's tempo estimator defaults to a very narrow prior (std_bpm=1.0,
+#: i.e. one octave of std-dev in log2-BPM space, combined with a heavily
+#: log-compressed tempogram weighting that lets the prior dominate whenever
+#: the autocorrelation peak isn't overwhelmingly strong). In practice this
+#: pulls a large fraction of real-world tracks' tempo estimates toward
+#: ~120 BPM regardless of their true tempo, and causes spurious "tempo
+#: change" events where the local tempo curve flips between the prior's
+#: pull and the song's real periodicity. Widening it lets the actual
+#: autocorrelation peak decide within the whole practical music-tempo
+#: range, while still mildly discouraging implausible extremes.
+#: See: https://librosa.org/doc -- librosa.feature.rhythm.tempo's own
+#: docstring example demonstrates this exact jumpiness under the default.
+TEMPO_PRIOR_STD_BPM = 3.0
+
 
 @dataclass(frozen=True)
 class TempoChangeEvent:
@@ -141,6 +155,27 @@ def _window_stability(segment: np.ndarray) -> float:
     return float(np.clip(1.0 - cv / 0.08, 0.0, 1.0))
 
 
+#: Ratios at which a beat tracker locking onto a different metrical level
+#: (double/half time, triple/dotted feel) rather than the music actually
+#: changing tempo is far more likely than a genuine tempo change.
+_OCTAVE_ERROR_RATIOS = (0.5, 2.0, 1.5, 2.0 / 3.0, 1.0 / 3.0, 3.0)
+_OCTAVE_ERROR_TOLERANCE = 0.06
+_OCTAVE_ERROR_PENALTY = 0.1
+
+
+def _octave_error_penalty(from_bpm: float, to_bpm: float) -> float:
+    """1.0 normally; heavily discounted when ``to_bpm/from_bpm`` sits close
+    to a simple ratio like 2x or 1.5x -- the classic signature of tracking
+    a different metrical level rather than a real tempo change."""
+    if from_bpm <= 1e-6 or to_bpm <= 1e-6:
+        return 1.0
+    ratio = to_bpm / from_bpm
+    for suspicious in _OCTAVE_ERROR_RATIOS:
+        if abs(ratio - suspicious) / suspicious < _OCTAVE_ERROR_TOLERANCE:
+            return _OCTAVE_ERROR_PENALTY
+    return 1.0
+
+
 def _tempo_change_events(
     times: np.ndarray, bpm_curve: np.ndarray, *, global_confidence: float
 ) -> list[TempoChangeEvent]:
@@ -164,8 +199,9 @@ def _tempo_change_events(
         # change, so local plateau-stability and the song's overall tempo
         # confidence both gate the final confidence, not just jump size.
         local_stability = min(_window_stability(before), _window_stability(after))
+        octave_penalty = _octave_error_penalty(from_bpm, to_bpm)
         confidence = float(
-            np.clip(rel_change / 0.25, 0.0, 1.0) * local_stability * global_confidence
+            np.clip(rel_change / 0.25, 0.0, 1.0) * local_stability * global_confidence * octave_penalty
         )
         if confidence < 0.1:
             continue
@@ -243,17 +279,24 @@ def analyze_tempo_beat(y: np.ndarray, sr: int) -> TempoBeatFeatures:
     if not np.any(onset_env > 1e-9):
         return _empty_result()
 
-    tempo_raw, beat_frames = librosa.beat.beat_track(
-        onset_envelope=onset_env, sr=sr, hop_length=HOP_LENGTH, units="frames"
+    tempo_raw = librosa_rhythm.tempo(
+        onset_envelope=onset_env, sr=sr, hop_length=HOP_LENGTH, aggregate=np.median, std_bpm=TEMPO_PRIOR_STD_BPM
     )
     bpm = float(np.atleast_1d(tempo_raw)[0])
+    # Feed our own (wide-prior) tempo estimate in directly rather than letting
+    # beat_track re-derive tempo internally under its own narrow default prior.
+    _, beat_frames = librosa.beat.beat_track(
+        onset_envelope=onset_env, sr=sr, hop_length=HOP_LENGTH, bpm=bpm, units="frames"
+    )
     beat_times = librosa.frames_to_time(beat_frames, sr=sr, hop_length=HOP_LENGTH)
     beat_intervals = np.diff(beat_times)
 
     bpm_confidence = _tempo_confidence(onset_env, sr, bpm)
     tempo_stability = _tempo_stability(beat_intervals)
 
-    local_tempo = librosa_rhythm.tempo(onset_envelope=onset_env, sr=sr, hop_length=HOP_LENGTH, aggregate=None)
+    local_tempo = librosa_rhythm.tempo(
+        onset_envelope=onset_env, sr=sr, hop_length=HOP_LENGTH, aggregate=None, std_bpm=TEMPO_PRIOR_STD_BPM
+    )
     tempo_curve_times = onset_env_times[: len(local_tempo)]
     tempo_change_events = _tempo_change_events(tempo_curve_times, local_tempo, global_confidence=bpm_confidence)
 

@@ -24,6 +24,8 @@ from songanalysis.structure.segmentation import StructureAnalysis
 
 LOW_VOCAL_DENSITY_THRESHOLD = 0.2
 DOWNBEAT_SNAP_TOLERANCE_SEC = 1.0
+DROP_MIN_MAGNITUDE = 0.08
+DROP_LOOKBACK_SEC = 6.0
 LOOP_BAR_LENGTHS = (4, 8, 16)
 LOOP_MIN_CONFIDENCE = 0.55
 LOOP_MAX_CANDIDATES = 20
@@ -287,19 +289,37 @@ def _events(
             )
         )
 
-    valley_times = np.array([v.time for v in energy_timeline.local_valleys])
+    # A real DJ "drop" is a jump out of a genuine lull, not just any energy
+    # increase that happens to sit near *a* locally-lower sample -- on tracks
+    # with a fairly narrow, wobbly energy range (a lot of rap/rock/electronic
+    # material), nearly every beat-to-beat swing has some technically-local
+    # valley within a few seconds, which used to make nearly every
+    # major_energy_change increase get relabeled "drop". Requiring the
+    # preceding stretch to actually dip into the *song's own* bottom quartile
+    # (not just be locally lower than its immediate neighbors) is a much
+    # closer match for what "before the drop" actually sounds like.
+    energy_low_threshold = (
+        float(np.percentile(energy_timeline.composite_energy, 25)) if energy_timeline.composite_energy.size else 0.0
+    )
     for change in energy_timeline.major_energy_changes:
         if change.direction != "increase":
             continue
-        if valley_times.size and np.any(np.abs(valley_times - change.time) <= 8.0):
-            confidence = float(np.clip(change.confidence * 1.1, 0.0, 1.0))
-            events.append(
-                DJEvent(
-                    time=change.time,
-                    type="drop",
-                    confidence=confidence,
-                    details={"magnitude": change.magnitude, "section_id": _section_at(structure, change.time)},
-                )
+        if change.magnitude < DROP_MIN_MAGNITUDE:
+            continue
+        lookback_mask = (energy_timeline.times >= change.time - DROP_LOOKBACK_SEC) & (
+            energy_timeline.times <= change.time
+        )
+        preceding = energy_timeline.composite_energy[lookback_mask]
+        if preceding.size == 0 or float(np.min(preceding)) > energy_low_threshold:
+            continue
+        confidence = float(np.clip(change.confidence * 1.1, 0.0, 1.0))
+        events.append(
+            DJEvent(
+                time=change.time,
+                type="drop",
+                confidence=confidence,
+                details={"magnitude": change.magnitude, "section_id": _section_at(structure, change.time)},
+            )
             )
 
     for section in structure.sections:

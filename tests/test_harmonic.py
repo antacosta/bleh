@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from songanalysis.features.harmonic import analyze_harmonic
+from songanalysis.features.harmonic import _key_change_events, analyze_harmonic
 from conftest import SR, silence
 
 
@@ -44,3 +44,22 @@ def test_confidence_never_fabricated_out_of_range():
     for candidate in result.key_candidates:
         assert -1.0 <= candidate.correlation <= 1.0
     assert 0.0 <= result.key_confidence <= 1.0
+
+
+def test_key_change_events_suppressed_when_song_key_is_unreliable():
+    """Regression test: real-song validation found songs with ~0-15% overall
+    key_confidence still emitting a dozen-plus key_change events (each with
+    a nominally-plausible per-window confidence) purely from windowed key
+    detection noise. Per-window confidence alone isn't enough evidence; it
+    must be scaled by how trustworthy key detection is for the song overall."""
+    times = np.arange(6, dtype=np.float64) * 4.0
+    keys = ["C major", "C major", "G major", "G major", "D major", "D major"]
+    confidences = [0.6, 0.6, 0.6, 0.6, 0.6, 0.6]
+
+    events_unreliable_song = _key_change_events(times, keys, confidences, global_confidence=0.0)
+    assert events_unreliable_song == []
+
+    events_reliable_song = _key_change_events(times, keys, confidences, global_confidence=1.0)
+    assert len(events_reliable_song) == 2
+    for event in events_reliable_song:
+        assert 0.0 <= event.confidence <= 1.0

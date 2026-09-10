@@ -111,7 +111,12 @@ def _windowed_key_curve(
 
 
 def _key_change_events(
-    times: np.ndarray, keys: list[str | None], confidences: list[float], *, min_run: int = 2
+    times: np.ndarray,
+    keys: list[str | None],
+    confidences: list[float],
+    *,
+    global_confidence: float,
+    min_run: int = 2,
 ) -> list[KeyChangeEvent]:
     if len(keys) < min_run * 2:
         return []
@@ -132,7 +137,16 @@ def _key_change_events(
         if prev_run[0] == next_run[0]:
             continue
         change_idx = next_run[1]
-        conf = float(np.mean(confidences[next_run[1] : next_run[2]]))
+        # A per-window key correlation margin only says "this window looks more
+        # like key X than Y"; it says nothing about whether key detection is
+        # trustworthy for this song at all. Scale by the song's overall key
+        # confidence too, so a song the analyzer can't confidently key at all
+        # doesn't still emit a string of nominally-plausible key-change events
+        # (mirrors the same gating applied to tempo_change_events).
+        window_conf = float(np.mean(confidences[next_run[1] : next_run[2]]))
+        conf = float(np.clip(window_conf * global_confidence, 0.0, 1.0))
+        if conf < 0.1:
+            continue
         events.append(
             KeyChangeEvent(time=float(times[change_idx]), from_key=prev_run[0], to_key=next_run[0], confidence=conf)
         )
@@ -165,7 +179,7 @@ def analyze_harmonic(y: np.ndarray, sr: int) -> HarmonicFeatures:
     top = candidates[0] if candidates else None
 
     key_curve_times, key_curve, key_curve_conf = _windowed_key_curve(chroma, chroma_times, sr)
-    key_change_events = _key_change_events(key_curve_times, key_curve, key_curve_conf)
+    key_change_events = _key_change_events(key_curve_times, key_curve, key_curve_conf, global_confidence=confidence)
 
     return HarmonicFeatures(
         chroma_times=chroma_times,
