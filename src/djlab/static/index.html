@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>AI DJ Lab</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<header class="app-header">
+  <div class="app-title">
+    <h1>AI DJ Lab</h1>
+    <span class="subtitle">Local testing harness for the AI DJ engine &mdash; not the consumer app</span>
+  </div>
+  <label class="debug-toggle">
+    <input type="checkbox" id="debugToggle" />
+    Debug info
+  </label>
+</header>
+
+<div id="toast" class="toast" hidden></div>
+
+<main class="layout">
+  <aside class="library-panel">
+    <h2>1. Library</h2>
+    <div class="library-load">
+      <input type="text" id="libraryPath" placeholder="/Users/you/Music/dj-test-library" />
+      <button id="loadLibraryBtn">Load</button>
+    </div>
+    <p class="library-summary" id="librarySummary">No library loaded yet.</p>
+
+    <div class="analyze-row">
+      <button id="analyzeAllBtn" disabled>Analyze all missing</button>
+      <div class="progress-wrap" id="analyzeProgressWrap" hidden>
+        <div class="progress-bar"><div class="progress-fill" id="analyzeProgressFill"></div></div>
+        <span id="analyzeProgressLabel"></span>
+      </div>
+    </div>
+
+    <ul class="song-list" id="songList"></ul>
+  </aside>
+
+  <section class="main-panel">
+    <h2>2. Starting song &amp; direction</h2>
+    <div class="starting-song" id="startingSongDisplay">No starting song selected &mdash; click a song in the library.</div>
+
+    <div class="controls">
+      <div class="control-group">
+        <span class="control-label">3. Energy direction</span>
+        <div class="segmented" id="directionButtons">
+          <button data-direction="none" class="active">None</button>
+          <button data-direction="build">Build</button>
+          <button data-direction="maintain">Maintain</button>
+          <button data-direction="release">Release</button>
+        </div>
+      </div>
+
+      <div class="control-group">
+        <span class="control-label">4. Plan length</span>
+        <div class="segmented" id="horizonModeButtons">
+          <button data-mode="count" class="active"># of songs</button>
+          <button data-mode="duration">~ minutes</button>
+        </div>
+        <input type="number" id="numSongsInput" value="4" min="1" max="8" />
+        <input type="number" id="durationInput" value="15" min="1" max="120" hidden />
+      </div>
+
+      <button id="generatePlanBtn" class="primary">Generate Plan</button>
+    </div>
+
+    <div id="planArea" class="plan-area" hidden>
+      <div class="sequence-summary" id="sequenceSummary"></div>
+      <div class="energy-trajectory" id="energyTrajectory"></div>
+      <ol class="plan-steps" id="planSteps"></ol>
+
+      <div class="debug-panel" id="debugPanel" hidden>
+        <h3>Debug: sequence score</h3>
+        <div id="debugSequenceScore"></div>
+        <h3>Debug: local-vs-global (why this opening was chosen)</h3>
+        <div id="debugLocalVsGlobal"></div>
+        <div id="debugSearchNotes"></div>
+      </div>
+
+      <button id="renderMixBtn" disabled title="Not available yet -- Audio Rendering layer not built">
+        Render Mix (not yet available)
+      </button>
+    </div>
+  </section>
+</main>
+
+<div class="modal-backdrop" id="songDebugModalBackdrop" hidden>
+  <div class="modal">
+    <button class="modal-close" id="songDebugModalClose">&times;</button>
+    <div id="songDebugModalContent"></div>
+  </div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>

@@ -247,3 +247,81 @@ scores, sequence-level component values, the energy-level trajectory, and a
 `reasons` list -- all built by formatting numbers already computed
 elsewhere in this package. Nothing in `songplanner` (or any layer here)
 generates natural-language explanations via an LLM.
+
+---
+
+# djlab
+
+A local developer/testing UI (`src/djlab/`) for exercising the engine above
+by hand -- pick a folder, analyze songs, generate a look-ahead plan, inspect
+the scoring behind it. It is **not** the consumer product: no accounts, no
+streaming integrations, no polish beyond making the engine easy to poke at.
+It binds to `127.0.0.1` only and is never meant to be reached from another
+machine.
+
+`djlab` is a thin orchestration layer, not a fourth algorithmic layer: it
+only calls the existing `songanalysis` / `songscoring` / `songplanner`
+public interfaces and reshapes their output into JSON for a browser page.
+It never reanalyzes audio, rescores candidates, replans a sequence, or
+duplicates any weight/threshold from those packages -- see the "UI
+independence" note below for how that's verified.
+
+## Launch
+
+```
+uv sync                 # installs Flask alongside the existing deps
+uv run djlab            # opens http://127.0.0.1:8787 in your default browser
+```
+
+Optional flags: `--library /path/to/music` (preload a folder on startup),
+`--port 8787`, `--no-browser`. Music folders are entered as a plain
+filesystem path in the UI itself (typed or pasted) -- browsers don't expose
+real folder paths from a picker, and this is a local tool talking to a
+local server on the same machine, so a path field is simpler and more
+transparent than pretending otherwise.
+
+## Workflow
+
+Select a library folder -> analyze any unanalyzed songs (runs the real
+`songanalysis` pipeline in a background thread, with a progress bar) ->
+click a song to start from -> choose an energy direction (None / Build /
+Maintain / Release) and a plan length (song count or ~minutes) -> Generate
+Plan -> inspect the resulting sequence, its scores, and the reasons behind
+it. A "Debug info" toggle reveals the full one-step component breakdown per
+transition, the sequence-level component breakdown, and the local-vs-global
+comparison table (see `songplanner`'s README section above) without
+cluttering the default view.
+
+**Transition Selection and Audio Rendering don't exist yet.** Rather than
+fabricate a stand-in inside the UI, each transition shows an explicit
+"not yet implemented" placeholder alongside the one signal already
+available today (the structural mix-in/mix-out affordance score) that a
+real transition-selection layer will eventually consume. "Render Mix" is
+present but disabled for the same reason.
+
+## Components it calls
+
+```
+djlab/library.py     -- songanalysis.io.loader.probe_audio_file,
+                         songanalysis.io.metadata.extract_metadata,
+                         songanalysis.cache.AnalysisCache (fast listing only)
+djlab/jobs.py         -- songanalysis.cache.analyze_song_cached (background thread)
+djlab/planning.py     -- songscoring.state.DJState,
+                         songplanner.config.PlannerConfig,
+                         songplanner.planner.plan_sequence
+djlab/profile_view.py -- read-only field access on songscoring.song_profile.SongProfile
+djlab/server.py       -- Flask routes wiring the above to JSON; no logic of its own
+djlab/cli.py          -- process entry point (`djlab` command)
+djlab/static/         -- vanilla HTML/CSS/JS front end, no build step
+```
+
+## UI independence
+
+`songanalysis`, `songscoring`, and `songplanner` have zero references to
+`djlab` (checked with `grep -rl djlab src/song*`), and `djlab` carries no
+tuned numeric weight/threshold of its own -- only UI-facing unit
+conversions (e.g. clamping a requested song count to 1-8, or estimating a
+song count from a target duration using the library's average song
+length). The only algorithmic decision `djlab` makes is *not* to fabricate
+a transition-selection heuristic to fill the "Transition" column -- it
+shows what doesn't exist yet as exactly that.
