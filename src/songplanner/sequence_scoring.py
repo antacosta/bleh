@@ -65,15 +65,22 @@ class SequenceScoreBreakdown:
         }
 
 
-def _anchor_energy_level(root_state: DJState) -> float:
+def _anchor_energy_level(root_state: DJState, energy_window_sec: float) -> float:
     """Where the real set's energy currently stands, as the first point on
     the trajectory -- the outgoing song's ending energy if we have one,
     else its overall energy, else a neutral midpoint at the very start of
-    a set."""
+    a set.
+
+    ``energy_window_sec`` should be ``config.scoring.energy.window_sec`` --
+    the same tail-window width the one-step energy component itself uses
+    (see ``songscoring.components.energy``) -- so retuning that one setting
+    moves this anchor too, rather than this module keeping its own,
+    silently-divergent copy of the number.
+    """
     current = root_state.current_song
     if current is None:
         return 0.5
-    ending = current.ending_energy(20.0, from_position=root_state.current_position)
+    ending = current.ending_energy(energy_window_sec, from_position=root_state.current_position)
     return ending if ending is not None else current.overall_energy
 
 
@@ -162,13 +169,16 @@ def _coherence_score(
     """Penalize erratic genre "bouncing" (A -> B -> A) while allowing a
     sustained run (A -> A -> B) or a deliberate progression (A -> B -> C) --
     see config.genre_bounce_penalty."""
+    # genres[0] is the real current song (not part of the plan); genres[k]
+    # for k >= 1 is sequence[k - 1], i.e. the 1-based PlanStep.position k --
+    # so a bounce landing on genres[i] is reported at position i, not i - 1.
     genres = [root_state.current_song.genre if root_state.current_song else None] + [s.genre for s in sequence]
     penalty = 0.0
     reasons: list[str] = []
     for i in range(2, len(genres)):
         if genres[i] and genres[i - 1] and genres[i - 2] and genres[i] == genres[i - 2] and genres[i] != genres[i - 1]:
             penalty += config.genre_bounce_penalty
-            reasons.append(f"genre bounced back to {genres[i]!r} at plan position {i - 1}")
+            reasons.append(f"genre bounced back to {genres[i]!r} at plan position {i}")
     value = max(0.0, 100.0 - penalty)
     if not reasons:
         reasons.append("no erratic genre bounce-backs detected")
@@ -181,6 +191,7 @@ def score_sequence(
     step_scores: tuple[CandidateScore, ...],
     config: SequenceScoringConfig,
     energy_intent_config: EnergyIntentConfig,
+    energy_window_sec: float = 20.0,
 ) -> SequenceScoreBreakdown:
     """Score one complete (or partial) planned path.
 
@@ -189,6 +200,11 @@ def score_sequence(
     variety check extends, and the originally requested direction/intent
     strength, all of which stay constant for every node in one planning
     call regardless of how deep the path has gone.
+
+    ``energy_window_sec`` should be the caller's ``ScoringConfig.energy.
+    window_sec`` (its default here just mirrors ``EnergyConfig``'s own
+    default for callers that don't otherwise care) -- see
+    ``_anchor_energy_level``.
     """
     if not sequence:
         empty = ComponentScore(value=100.0, confidence=1.0, explanation={"reason": "empty sequence"})
@@ -196,7 +212,7 @@ def score_sequence(
             path_score=100.0,
             path_confidence=1.0,
             components={"transition": empty, "trajectory": empty, "variety": empty, "coherence": empty},
-            energy_levels=(_anchor_energy_level(root_state),),
+            energy_levels=(_anchor_energy_level(root_state, energy_window_sec),),
             reasons=("empty plan",),
         )
 
@@ -215,7 +231,7 @@ def score_sequence(
     # to do with whether the trajectory claim itself should be trusted).
     mean_energy_confidence = statistics.fmean(s.energy_score.confidence for s in step_scores)
 
-    levels = [_anchor_energy_level(root_state)] + [s.overall_energy for s in sequence]
+    levels = [_anchor_energy_level(root_state, energy_window_sec)] + [s.overall_energy for s in sequence]
     trajectory_value, trajectory_reasons = _trajectory_score(levels, root_state.desired_energy_direction, config)
     trajectory_component = ComponentScore(
         value=trajectory_value,

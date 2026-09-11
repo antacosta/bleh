@@ -39,7 +39,12 @@ def _sequence_tie_break_key(node: PlannerState) -> tuple[str, ...]:
 
 def _score_node(root_state: DJState, node: PlannerState, config: PlannerConfig) -> SequenceScoreBreakdown:
     return score_sequence(
-        root_state, node.planned_sequence, node.step_scores, config.sequence, config.scoring.energy_intent
+        root_state,
+        node.planned_sequence,
+        node.step_scores,
+        config.sequence,
+        config.scoring.energy_intent,
+        config.scoring.energy.window_sec,
     )
 
 
@@ -109,7 +114,17 @@ def plan_sequence(state: DJState, library: list[SongProfile], config: PlannerCon
 
         for node, breakdown in scored:
             root_id = node.root_choice_id
-            if root_id is not None:
+            if root_id is None:
+                continue
+            # Multiple surviving paths can share the same opening move (a
+            # root can still have >1 lineage in the beam at once), so more
+            # than one entry for the same root_id can turn up in one round.
+            # Those are directly comparable (same root, same depth), so keep
+            # the best of them -- an unconditional overwrite here would make
+            # the reported number depend on iteration order rather than on
+            # which continuation was actually best.
+            previous = latest_by_root.get(root_id)
+            if previous is None or node.depth > previous[0] or (node.depth == previous[0] and breakdown.path_score > previous[1]):
                 latest_by_root[root_id] = (node.depth, breakdown.path_score)
 
         scored.sort(key=lambda pair: (-pair[1].path_score, _sequence_tie_break_key(pair[0])))

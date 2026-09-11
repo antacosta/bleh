@@ -182,8 +182,14 @@ def _tempo_change_events(
     events = []
     for cp in points:
         lo, hi = max(0, cp.index - 8), min(len(bpm_curve), cp.index + 8)
-        before = bpm_curve[lo : cp.index] if cp.index > lo else bpm_curve[lo:hi]
-        after = bpm_curve[cp.index : hi] if cp.index < hi else bpm_curve[lo:hi]
+        # Plain slices, not a "whole window" fallback: a change point right
+        # at the very start/end of the curve has no room on one side, and
+        # substituting the full lo:hi span there would blend `after` values
+        # into `before` (or vice versa), understating rel_change exactly
+        # when the jump is most likely to be real. An empty slice already
+        # falls through correctly to the single-point fallback below.
+        before = bpm_curve[lo : cp.index]
+        after = bpm_curve[cp.index : hi]
         from_bpm = float(np.mean(before)) if before.size else float(bpm_curve[cp.index])
         to_bpm = float(np.mean(after)) if after.size else float(bpm_curve[cp.index])
         if from_bpm <= 1e-6:
