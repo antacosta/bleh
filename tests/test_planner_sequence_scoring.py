@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from songscoring.config import EnergyIntentConfig
 from songscoring.state import DJState, EnergyDirection, EnergyIntentStrength
@@ -151,6 +152,10 @@ def test_coherence_penalizes_genre_bounce_back():
     result = score_sequence(root, sequence, step_scores, SEQ_CFG, INTENT_CFG)
     assert result.components["coherence"].value < 100.0
     assert any("bounced back" in r for r in result.reasons)
+    # The bounce-back song is "b", plan position 2 (1-based) -- the reason
+    # must point at the song that actually bounced, not at "a" (its
+    # position 1) which is where the genre first changed away from Rock.
+    assert any("plan position 2" in r for r in result.reasons)
 
 
 def test_coherence_does_not_penalize_a_progression_or_a_sustained_run():
@@ -211,3 +216,26 @@ def test_empty_sequence_scores_neutrally_without_crashing():
     result = score_sequence(root, (), (), SEQ_CFG, INTENT_CFG)
     assert result.path_score == 100.0
     assert result.path_confidence == 1.0
+
+
+def test_anchor_energy_level_respects_the_configured_energy_window():
+    """The trajectory's starting point is the outgoing song's *tail* energy
+    -- how much of the tail depends on the same window_sec the one-step
+    energy component itself uses (``ScoringConfig.energy.window_sec``), not
+    a copy of that number frozen inside the planner. A song that ramps up
+    steadily makes a short tail window read close to the song's peak and a
+    long window average in much more of the ramp, so the two must disagree."""
+    duration = 200.0
+    times = np.linspace(0, duration, 200)
+    ramping_energy = times / duration  # 0.0 at the start, 1.0 at the very end
+    current = make_profile(id="current", duration_sec=duration, energy_times=times, composite_energy=ramping_energy)
+    root = DJState(current_song=current)
+    sequence = (make_profile(id="a", overall_energy=0.5),)
+    step_scores = (make_candidate_score("a", 70.0),)
+
+    narrow = score_sequence(root, sequence, step_scores, SEQ_CFG, INTENT_CFG, energy_window_sec=5.0)
+    wide = score_sequence(root, sequence, step_scores, SEQ_CFG, INTENT_CFG, energy_window_sec=100.0)
+
+    assert narrow.energy_levels[0] > wide.energy_levels[0]
+    assert narrow.energy_levels[0] == pytest.approx(0.9875, abs=0.01)
+    assert wide.energy_levels[0] == pytest.approx(0.75, abs=0.01)
